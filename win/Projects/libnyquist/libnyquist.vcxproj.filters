@@ -426,9 +426,6 @@
     <ClCompile Include="..\..\..\lib-src\libnyquist\nyquist\tran\upsample.c">
       <Filter>nyquist\tran</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\lib-src\libnyquist\nyquist\tran\white.c">
-      <Filter>nyquist\tran</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\lib-src\libnyquist\nyquist\xlisp\extern.c">
       <Filter>nyquist\xlisp</Filter>
     </ClCompile>
@@ -646,6 +643,9 @@
     </ClCompile>
     <ClCompile Include="..\..\..\lib-src\libnyquist\nyquist\nyqsrc\pvshell.c">
       <Filter>nyquist\nyqsrc</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\lib-src\libnyquist\nyquist\tran\white.cpp">
+      <Filter>nyquist\tran</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\lib-src\libnyquist\RngSupport.cpp" />
     <ClCompile Include="..\..\..\lib-src\libnyquist\nyquist\tran\whiteg.c">

@@ -1,4 +1,3 @@
-sound_type snd_make_white(time_type t0, rate_type sr, time_type d);
 sound_type snd_white(time_type t0, rate_type sr, time_type d);
     /* LISP: (snd-white ANYNUM ANYNUM ANYNUM) */
 
