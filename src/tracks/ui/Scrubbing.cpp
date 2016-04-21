@@ -34,11 +34,6 @@ enum {
 };
 
 namespace {
-   bool PollIsSeeking()
-   {
-      return ::wxGetMouseState().LeftIsDown();
-   }
-
    double FindScrubbingSpeed(const ViewInfo &viewInfo, double maxScrubSpeed, double screen, double timeAtMouse)
    {
       // Map a time (which was mapped from a mouse position)
@@ -144,6 +139,7 @@ void Scrubber::MarkScrubStart(
 #ifdef EXPERIMENTAL_SCRUBBING_SMOOTH_SCROLL
    , bool smoothScrolling
 #endif
+   , bool alwaysSeeking
 )
 {
    const wxCoord xx = event.m_x;
@@ -154,10 +150,12 @@ void Scrubber::MarkScrubStart(
 #ifdef EXPERIMENTAL_SCRUBBING_SMOOTH_SCROLL
    mSmoothScrollingScrub = smoothScrolling;
 #endif
+   mAlwaysSeeking = alwaysSeeking;
    mScrubStartPosition = xx;
    mScrubStartClockTimeMillis = ::wxGetLocalTimeMillis();
 
    ControlToolBar * const ctb = mProject->GetControlToolBar();
+   ctb->SetPlay(true, ControlToolBar::PlayAppearance::Scrub);
    ctb->UpdateStatusBar(mProject);
    mProject->GetTrackPanel()->HandleCursor(event);
 }
@@ -202,10 +200,12 @@ bool Scrubber::MaybeStartScrubbing(const wxMouseEvent &event)
             options.scrubStartClockTimeMillis = mScrubStartClockTimeMillis;
             options.minScrubStutter = 0.2;
 #if 0
-            // Take the starting speed limit from the transcription toolbar,
-            // but it may be varied during the scrub.
-            mMaxScrubSpeed = options.maxScrubSpeed =
+            if (!mAlwaysSeeking) {
+               // Take the starting speed limit from the transcription toolbar,
+               // but it may be varied during the scrub.
+               mMaxScrubSpeed = options.maxScrubSpeed =
                p->GetTranscriptionToolBar()->GetPlaySpeed();
+            }
 #else
             // That idea seems unpopular... just make it one
             mMaxScrubSpeed = options.maxScrubSpeed = 1.0;
@@ -313,17 +313,18 @@ void Scrubber::StopScrubbing()
 {
    mScrubStartPosition = -1;
    mSmoothScrollingScrub = false;
+   const auto ctb = mProject->GetControlToolBar();
 
    if (IsScrubbing())
    {
       if (gAudioIO->IsBusy()) {
-         ControlToolBar *const ctb = mProject->GetControlToolBar();
          ctb->StopPlaying();
       }
-      return;
    }
-   else
-      return;
+   else {
+      // Didn't really play, but did change button apperance
+      ctb->SetPlay(false, ControlToolBar::PlayAppearance::Straight);
+   }
 }
 
 bool Scrubber::IsScrubbing() const
@@ -488,7 +489,7 @@ void ScrubbingOverlay::OnTimer(wxCommandEvent &event)
       ::wxGetMousePosition(&xx, &yy);
       trackPanel->ScreenToClient(&xx, &yy);
 
-      const bool seeking = PollIsSeeking();
+      const bool seeking = scrubber.PollIsSeeking();
 
       // Find the text
       const double maxScrubSpeed = GetScrubber().GetMaxScrubSpeed();
@@ -543,4 +544,10 @@ Scrubber &ScrubbingOverlay::GetScrubber()
 {
    return mProject->GetScrubber();
 }
+
+bool Scrubber::PollIsSeeking()
+{
+   return mAlwaysSeeking || ::wxGetMouseState().LeftIsDown();
+}
+
 #endif
