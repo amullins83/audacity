@@ -11,6 +11,7 @@ Paul Licameli split from TrackPanel.cpp
 #ifndef __AUDACITY_SCRUBBING__
 #define __AUDACITY_SCRUBBING__
 
+#include <vector>
 #include <wx/event.h>
 #include <wx/longlong.h>
 
@@ -37,6 +38,8 @@ public:
    // Returns true iff the event should be considered consumed by this:
    bool MaybeStartScrubbing(const wxMouseEvent &event);
    void ContinueScrubbing();
+
+   // This is meant to be called only from ControlToolBar
    void StopScrubbing();
 
    wxCoord GetScrubStartPosition() const
@@ -59,8 +62,24 @@ public:
    void SetSeeking() { mScrubSeekPress = true; }
    bool PollIsSeeking();
 
+   void AddMenuItems();
+
+   void OnScrub();
+   void OnScrollScrub();
+   void OnSeek();
+   void OnScrollSeek();
+
+   // A string to put in the leftmost part of the status bar.
+   const wxString &GetUntranslatedStateString() const;
+
+   // All possible status strings.
+   static std::vector<wxString> GetAllUntranslatedStatusStrings();
+
 private:
+   void DoScrub(bool scroll, bool seek);
    void OnActivateOrDeactivateApp(wxActivateEvent & event);
+   void UncheckAllMenuItems();
+   void CheckMenuItem();
 
 private:
    int mScrubToken;
