@@ -10,6 +10,7 @@ Paul Licameli split from TrackPanel.cpp
 
 #include "Scrubbing.h"
 #include "../../Experimental.h"
+#include <functional>
 
 #include "../../AudioIO.h"
 #include "../../Project.h"
@@ -642,11 +643,14 @@ void Scrubber::OnScrollSeek()
 
 const wxString &Scrubber::GetUntranslatedStateString() const
 {
+   static wxString empty;
+
    if (HasStartedScrubbing()) {
-      auto item = FindMenuItem(mSmoothScrollingScrub, mAlwaysSeeking);
+      auto &item = FindMenuItem(mSmoothScrollingScrub, mAlwaysSeeking);
       return item.status;
    }
-   else return {};
+   else
+      return empty;
 }
 
 std::vector<wxString> Scrubber::GetAllUntranslatedStatusStrings()
