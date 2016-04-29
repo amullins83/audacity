@@ -168,7 +168,7 @@ public:
    wxRect mRect;
 
 private:
-   wxColour mTickColour;
+   static wxColour mTickColour;
    wxPen mPen;
 
    int          mMaxWidth, mMaxHeight;
@@ -251,7 +251,7 @@ class AUDACITY_DLL_API RulerPanel final : public wxPanel {
 
    void DoSetSize(int x, int y,
                   int width, int height,
-                  int sizeFlags = wxSIZE_AUTO);
+                  int sizeFlags = wxSIZE_AUTO) override;
 
    void OnErase(wxEraseEvent &evt);
    void OnPaint(wxPaintEvent &evt);
@@ -291,10 +291,11 @@ public:
    bool AcceptsFocus() const override { return false; };
 
 public:
-   static int GetRulerHeight() { return 28; }
+   static int GetRulerHeight();
+   static int GetRulerHeight(bool showScrubBar);
+
    void SetLeftOffset(int offset);
 
-   void DrawCursor(double time);
    void DrawIndicator(double time, bool rec);
    void DrawSelection();
    void ClearIndicator();
@@ -312,18 +313,32 @@ public:
    void RegenerateTooltips();
    void HideQuickPlayIndicator();
 
+   void UpdateQuickPlayPos(wxCoord &mousPosX);
+
 private:
    void OnCapture(wxCommandEvent & evt);
    void OnPaint(wxPaintEvent &evt);
    void OnSize(wxSizeEvent &evt);
+   void UpdateRects();
    void OnMouseEvents(wxMouseEvent &evt);
+
+   enum class StatusChoice {
+      EnteringQP,
+      EnteringScrubZone,
+      Leaving,
+      NoChange
+   };
+   void UpdateStatusBar(StatusChoice choice);
+
+   void DoMainMenu();
+
    void OnCaptureLost(wxMouseCaptureLostEvent &evt);
 
    void DoDrawBorder(wxDC * dc);
    void DoDrawMarks(wxDC * dc, bool /*text */ );
    void DoDrawCursor(wxDC * dc);
    void DoDrawSelection(wxDC * dc);
-   void DoDrawIndicator(wxDC * dc, double time, bool recording, int width);
+   void DoDrawIndicator(wxDC * dc, double time, bool playing, int width, bool scrub);
    void DoEraseIndicator(wxDC *dc, int x);
    QuickPlayIndicatorOverlay *GetOverlay();
    void DrawQuickPlayIndicator(wxDC * dc /*NULL to DELETE old only*/);
@@ -353,11 +368,10 @@ private:
    wxMemoryDC mBackDC;
 
    wxRect mOuter;
+   wxRect mScrubZone;
    wxRect mInner;
 
    int mLeftOffset;  // Number of pixels before we hit the 'zero position'.
-
-   double mCurTime;
 
 
    int mIndType;     // -1 = No indicator, 0 = Record, 1 = Play
@@ -381,6 +395,7 @@ private:
    // Pop-up menu
    //
    void ShowMenu(const wxPoint & pos);
+   void ShowScrubMenu(const wxPoint & pos);
    void DragSelection();
    void HandleSnapping();
    void OnToggleQuickPlay(wxCommandEvent &evt);
@@ -388,6 +403,11 @@ private:
    void OnTimelineToolTips(wxCommandEvent &evt);
    void OnAutoScroll(wxCommandEvent &evt);
    void OnLockPlayRegion(wxCommandEvent &evt);
+
+   //
+   // Main menu
+   //
+   void OnShowHideScrubbing(wxCommandEvent &evt);
 
    bool mPlayRegionDragsSelection;
    bool mTimelineToolTip;
@@ -410,6 +430,7 @@ private:
    std::unique_ptr<QuickPlayIndicatorOverlay> mOverlay;
 
    bool mPrevInScrubZone{};
+   bool mShowScrubbing { true };
 
    DECLARE_EVENT_TABLE()
 };
