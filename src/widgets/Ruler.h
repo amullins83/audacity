@@ -312,7 +312,26 @@ public:
    void InvalidateRuler();
 
    void UpdatePrefs();
-   void RegenerateTooltips();
+
+   enum class StatusChoice {
+      FirstButton = 0,
+      QuickPlayButton = FirstButton,
+      ScrubBarButton,
+
+      NumButtons,
+      NoButton = -1,
+
+      EnteringQP = NumButtons,
+      EnteringScrubZone,
+      Leaving,
+      NoChange
+   };
+   friend inline StatusChoice &operator++ (StatusChoice &choice) {
+      choice = static_cast<StatusChoice>(1 + static_cast<int>(choice));
+      return choice;
+   }
+
+   void RegenerateTooltips(StatusChoice choice);
    void HideQuickPlayIndicator();
 
    void UpdateQuickPlayPos(wxCoord &mousPosX);
@@ -327,13 +346,15 @@ private:
    void HandleQPDrag(wxMouseEvent &event, wxCoord mousePosX);
    void HandleQPRelease(wxMouseEvent &event);
 
-   enum class StatusChoice {
-      EnteringPushbuttons,
-      EnteringQP,
-      EnteringScrubZone,
-      Leaving,
-      NoChange
-   };
+   static inline bool IsButton(StatusChoice choice)
+   {
+      auto integer = static_cast<int>(choice);
+      return integer >= 0 &&
+         integer < static_cast<int>(StatusChoice::NumButtons);
+   }
+   static inline bool IsButton(int choice)
+   { return IsButton(static_cast<StatusChoice>(choice)); }
+
    void UpdateStatusBarAndTooltips(StatusChoice choice);
 
    void OnCaptureLost(wxMouseCaptureLostEvent &evt);
@@ -348,22 +369,30 @@ private:
    void DrawQuickPlayIndicator(wxDC * dc /*NULL to DELETE old only*/);
    void DoDrawPlayRegion(wxDC * dc);
 
-   wxRect GetButtonAreaRect() const;
-   enum class Button {
-      QuickPlay = 0,
-      ScrubBar,
+   wxRect GetButtonAreaRect(bool includeBorder = false) const;
 
-      NumButtons,
-      NoButton = -1
+   struct ButtonStrings {
+      wxString label, enable, disable;
    };
-   static const wxString PushbuttonLabels[];
+   static const ButtonStrings PushbuttonLabels[];
+   static const ButtonStrings *GetPushButtonStrings(StatusChoice choice)
+   {
+      if(IsButton(choice))
+         return &PushbuttonLabels[static_cast<size_t>(choice)];
+      return nullptr;
+   }
 
-   wxRect GetButtonRect( Button button ) const;
-   bool InButtonRect( Button button ) const;
-   bool GetButtonState( Button button ) const;
-   void ToggleButtonState( Button button );
-   void DoDrawPushbutton(wxDC *dc, Button button, bool down) const;
+   wxRect GetButtonRect( StatusChoice button ) const;
+   enum PointerState { Out = 0, In, InArrow };
+   PointerState InButtonRect( StatusChoice button ) const;
+   StatusChoice FindButton( wxPoint position ) const;
+   bool GetButtonState( StatusChoice button ) const;
+   void ToggleButtonState( StatusChoice button );
+   void ShowButtonMenu( StatusChoice button, wxPoint position);
+   void DoDrawPushbutton(wxDC *dc, StatusChoice button, bool down,
+      PointerState pointerState) const;
    void DoDrawPushbuttons(wxDC *dc) const;
+   void HandlePushbuttonClick(wxMouseEvent &evt);
    void HandlePushbuttonEvent(wxMouseEvent &evt);
 
    wxFont &GetButtonFont() const;
@@ -428,14 +457,14 @@ private:
    void OnAutoScroll(wxCommandEvent &evt);
    void OnLockPlayRegion(wxCommandEvent &evt);
 
-   void OnToggleScrubbing();
+   void OnToggleScrubbing(wxCommandEvent&);
 
    bool mPlayRegionDragsSelection;
    bool mTimelineToolTip;
    bool mQuickPlayEnabled;
 
 
-   Button mCaptureState { Button::NoButton };
+   StatusChoice mCaptureState { StatusChoice::NoButton };
 
    enum MouseEventState {
       mesNone,
