@@ -84,6 +84,8 @@ array of Ruler::Label.
 #include "../Snap.h"
 #include "../tracks/ui/Scrubbing.h"
 
+//#define SCRUB_ABOVE
+
 using std::min;
 using std::max;
 
@@ -1872,7 +1874,7 @@ namespace {
    bool ReadScrubEnabledPref()
    {
       bool result {};
-      gPrefs->Read(scrubEnabledPrefName, &result, true);
+      gPrefs->Read(scrubEnabledPrefName, &result, false);
       return result;
    }
 
@@ -2085,7 +2087,7 @@ void AdornedRulerPanel::OnPaint(wxPaintEvent & WXUNUSED(evt))
    mBack->Create(sz.x, sz.y, dc);
    mBackDC.SelectObject(*mBack);
 
-   DoDrawBorder(&mBackDC);
+   DoDrawBackground(&mBackDC);
 
    if (!mViewInfo->selectedRegion.isPoint())
    {
@@ -2109,6 +2111,8 @@ void AdornedRulerPanel::OnPaint(wxPaintEvent & WXUNUSED(evt))
    DoDrawPlayRegion(&mBackDC);
 
    DoDrawPushbuttons(&mBackDC);
+
+   DoDrawEdge(&mBackDC);
 
    dc.Blit(0, 0, mBack->GetWidth(), mBack->GetHeight(), &mBackDC, 0, 0);
 
@@ -2137,21 +2141,30 @@ void AdornedRulerPanel::UpdateRects()
    mInner.x += LeftMargin;
    mInner.width -= (LeftMargin + RightMargin);
 
-   wxRect *top = &mInner;
+   auto top = &mInner;
+   auto bottom = &mInner;
 
    if (mShowScrubbing) {
       mScrubZone = mInner;
       auto scrubHeight = std::min(mScrubZone.height, int(ScrubHeight));
-      mScrubZone.height = scrubHeight;
-      mInner.height -= scrubHeight;
-      mInner.y += scrubHeight;
-      top = &mScrubZone;
+
+      int topHeight;
+#ifdef SCRUB_ABOVE
+      top = &mScrubZone, topHeight = scrubHeight;
+#else
+      auto qpHeight = mScrubZone.height - scrubHeight;
+      bottom = &mScrubZone, topHeight = qpHeight;
+#endif
+
+      top->height = topHeight;
+      bottom->height -= topHeight;
+      bottom->y += topHeight;
    }
 
    top->y += TopMargin;
    top->height -= TopMargin;
 
-   mInner.height -= BottomMargin;
+   bottom->height -= BottomMargin;
 
    if (!mShowScrubbing)
       mScrubZone = mInner;
@@ -2240,28 +2253,38 @@ void AdornedRulerPanel::OnMouseEvents(wxMouseEvent &evt)
 
    auto &scrubber = mProject->GetScrubber();
    if (scrubber.HasStartedScrubbing()) {
-      // If already clicked for scrub, preempt the usual event handling,
-      // no matter what the y coordinate.
+      if (zone == StatusChoice::EnteringQP &&
+          evt.LeftDown()) {
+         // Stop scrubbing
+         if (HasCapture())
+            ReleaseMouse();
+         mProject->OnStop();
+         // Continue to quick play event handling
+      }
+      else {
+         // If already clicked for scrub, preempt the usual event handling,
+         // no matter what the y coordinate.
 
-      // Do this hack so scrubber can detect mouse drags anywhere
-      evt.ResumePropagation(wxEVENT_PROPAGATE_MAX);
+         // Do this hack so scrubber can detect mouse drags anywhere
+         evt.ResumePropagation(wxEVENT_PROPAGATE_MAX);
 
-      if (scrubber.IsScrubbing())
-         evt.Skip();
-      else if (evt.LeftDClick())
-         // On the second button down, switch the pending scrub to scrolling
-         scrubber.MarkScrubStart(evt.m_x, true, false);
-      else
-         evt.Skip();
+         if (scrubber.IsScrubbing())
+            evt.Skip();
+         else if (evt.LeftDClick())
+            // On the second button down, switch the pending scrub to scrolling
+            scrubber.MarkScrubStart(evt.m_x, true, false);
+         else
+            evt.Skip();
 
-      mQuickPlayInd = true;
-      wxClientDC dc(this);
-      DrawQuickPlayIndicator(&dc);
+         mQuickPlayInd = true;
+         wxClientDC dc(this);
+         DrawQuickPlayIndicator(&dc);
 
-      if (HasCapture())
-         ReleaseMouse();
+         if (HasCapture())
+            ReleaseMouse();
 
-      return;
+         return;
+      }
    }
 
    // Store the initial play region state
@@ -2605,7 +2628,6 @@ void AdornedRulerPanel::UpdateStatusBarAndTooltips(StatusChoice choice)
       bool state = GetButtonState(choice);
       const auto &strings = *GetPushButtonStrings(choice);
       message += wxGetTranslation(state ? strings.disable : strings.enable);
-      message += wxT(" ") + _("(Right-Click for options)");
    }
    else {
       const auto &scrubber = mProject->GetScrubber();
@@ -3076,6 +3098,13 @@ void AdornedRulerPanel::DoDrawPushbuttons(wxDC *dc) const
 {
    // Paint the area behind the buttons
    wxRect background = GetButtonAreaRect();
+
+#ifndef SCRUB_ABOVE
+   // Reduce the height
+   background.y = mInner.y;
+   background.height = mInner.height;
+#endif
+
    AColor::MediumTrackInfo(dc, false);
    dc->DrawRectangle(background);
 
@@ -3088,7 +3117,7 @@ void AdornedRulerPanel::DoDrawPushbuttons(wxDC *dc) const
    }
 }
 
-void AdornedRulerPanel::DoDrawBorder(wxDC * dc)
+void AdornedRulerPanel::DoDrawBackground(wxDC * dc)
 {
    // Draw AdornedRulerPanel border
    AColor::MediumTrackInfo( dc, false );
@@ -3101,6 +3130,10 @@ void AdornedRulerPanel::DoDrawBorder(wxDC * dc)
       dc->DrawRectangle(mScrubZone);
    }
 
+}
+
+void AdornedRulerPanel::DoDrawEdge(wxDC *dc)
+{
    wxRect r = mOuter;
    r.width -= RightMargin;
    r.height -= BottomMargin;
@@ -3248,13 +3281,13 @@ void AdornedRulerPanel::DoEraseIndicator(wxDC *dc, int x)
 
       // Restore the background, but make it a little oversized to make
       // it happy OSX.
-      dc->Blit(x - indsize - 1,
-               mScrubZone.y - 1,
+      auto xx = x - indsize - 1;
+      auto yy = mScrubZone.y - 1;
+      dc->Blit(xx, yy,
                indsize * 2 + 1 + 2,
                mScrubZone.y + height + 2,
                &mBackDC,
-               x - indsize - 1,
-               0);
+               xx, yy);
    }
 }
 
