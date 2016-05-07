@@ -1780,6 +1780,17 @@ BEGIN_EVENT_TABLE(AdornedRulerPanel, wxPanel)
    // Scrub bar menu commands
    EVT_MENU(OnShowHideScrubbingID, AdornedRulerPanel::OnToggleScrubbing)
 
+   // Key events, to navigate buttons
+   EVT_COMMAND(wxID_ANY, EVT_CAPTURE_KEY, AdornedRulerPanel::OnCaptureKey)
+   EVT_KEY_DOWN(AdornedRulerPanel::OnKeyDown)
+
+   // Correct management of track focus
+   EVT_SET_FOCUS(AdornedRulerPanel::OnSetFocus)
+   EVT_KILL_FOCUS(AdornedRulerPanel::OnKillFocus)
+
+   // Pop up menus on Windows
+   EVT_CONTEXT_MENU(AdornedRulerPanel::OnContextMenu)
+
 END_EVENT_TABLE()
 
 AdornedRulerPanel::AdornedRulerPanel(AudacityProject* parent,
@@ -1947,7 +1958,7 @@ namespace {
          ++mRect.width;
          ++mRect.height;
       }
-      wxRect mRect;
+      wxRect &mRect;
    };
 }
 
@@ -1968,8 +1979,16 @@ wxFont &AdornedRulerPanel::GetButtonFont() const
 
             // Deduct for outlines, and room to move text
             // I might deduct 2 more for bevel, but that made the text too small.
+
+#ifdef __WXMSW__
+            // Deduct less for MSW, because GetTextExtent appears to overstate width, and
+            // I don't know why.  Not really happy with this arbitrary fix.
+            availableWidth -= 1;
+            availableHeight -= 1;
+#else
             availableWidth -= 2 + 1;
             availableHeight -= 2 + 1;
+#endif
 
             GetParent()->GetTextExtent(
                wxGetTranslation(GetPushButtonStrings(button)->label),
@@ -2067,6 +2086,12 @@ enum : int {
    TopMargin = 1,
    BottomMargin = 2, // for bottom bevel and bottom line
    LeftMargin = 1,
+
+   FocusBorder = 2,
+   FocusBorderLeft = FocusBorder,
+   FocusBorderTop = FocusBorder,
+   FocusBorderBottom = FocusBorder + 1, // count 1 for the black stroke
+
    RightMargin = 1,
 };
 
@@ -2231,6 +2256,10 @@ bool AdornedRulerPanel::IsWithinMarker(int mousePosX, double markerTime)
 
 void AdornedRulerPanel::OnMouseEvents(wxMouseEvent &evt)
 {
+   // PRL:  why do I need these two lines on Windows but not on Mac?
+   if (evt.ButtonDown(wxMOUSE_BTN_ANY))
+      SetFocus();
+
    // Disable mouse actions on Timeline while recording.
    if (mIsRecording) {
       if (HasCapture())
@@ -2281,8 +2310,12 @@ void AdornedRulerPanel::OnMouseEvents(wxMouseEvent &evt)
 
    auto &scrubber = mProject->GetScrubber();
    if (scrubber.HasStartedScrubbing()) {
-      if (zone == StatusChoice::EnteringQP &&
-          evt.LeftDown()) {
+      if (IsButton(zone))
+         // Fall through to pushbutton handling
+         ;
+      else if (zone == StatusChoice::EnteringQP &&
+               mQuickPlayEnabled &&
+               evt.LeftDown()) {
          // Stop scrubbing
          if (HasCapture())
             ReleaseMouse();
@@ -2730,6 +2763,102 @@ void AdornedRulerPanel::OnToggleScrubbing(wxCommandEvent&)
    PostSizeEventToParent();
 }
 
+void AdornedRulerPanel::OnCaptureKey(wxCommandEvent &event)
+{
+   wxKeyEvent *kevent = (wxKeyEvent *)event.GetEventObject();
+   int keyCode = kevent->GetKeyCode();
+
+   switch (keyCode)
+   {
+   case WXK_DOWN:
+   case WXK_NUMPAD_DOWN:
+   case WXK_UP:
+   case WXK_NUMPAD_UP:
+   case WXK_TAB:
+   case WXK_NUMPAD_TAB:
+   case WXK_RIGHT:
+   case WXK_NUMPAD_RIGHT:
+   case WXK_LEFT:
+   case WXK_NUMPAD_LEFT:
+   case WXK_RETURN:
+   case WXK_NUMPAD_ENTER:
+      return;
+   }
+
+   event.Skip();
+}
+
+void AdornedRulerPanel::OnKeyDown(wxKeyEvent &event)
+{
+   switch (event.GetKeyCode())
+   {
+      case WXK_DOWN:
+      case WXK_NUMPAD_DOWN:
+         // Always takes our focus away, so redraw.
+         mProject->GetTrackPanel()->OnNextTrack();
+         break;
+
+      case WXK_UP:
+      case WXK_NUMPAD_UP:
+         mProject->GetTrackPanel()->OnPrevTrack();
+         break;
+
+      case WXK_TAB:
+      case WXK_NUMPAD_TAB:
+         if (event.ShiftDown())
+            goto prev;
+         else
+            goto next;
+
+      case WXK_RIGHT:
+      case WXK_NUMPAD_RIGHT:
+         next:
+         ++mTabState;
+         Refresh();
+         break;
+
+      case WXK_LEFT:
+      case WXK_NUMPAD_LEFT:
+         prev:
+         --mTabState;
+         Refresh();
+         break;
+
+      case WXK_RETURN:
+      case WXK_NUMPAD_ENTER:
+         if(mTabState.mMenu)
+            ShowButtonMenu(mTabState.mButton, nullptr);
+         else {
+            ToggleButtonState(mTabState.mButton);
+            Refresh();
+         }
+         break;
+
+      default:
+         event.Skip();
+         break;
+   }
+}
+
+void AdornedRulerPanel::OnSetFocus(wxFocusEvent & WXUNUSED(event))
+{
+   AudacityProject::CaptureKeyboard(this);
+   mProject->GetTrackPanel()->SetFocusedTrack(nullptr);
+   mTabState = TabState{};
+   Refresh( false );
+}
+
+void AdornedRulerPanel::OnKillFocus(wxFocusEvent & WXUNUSED(event))
+{
+   AudacityProject::ReleaseKeyboard(this);
+   Refresh(false);
+}
+
+void AdornedRulerPanel::OnContextMenu(wxContextMenuEvent & WXUNUSED(event))
+{
+   ShowButtonMenu(mTabState.mButton, nullptr);
+}
+
 void AdornedRulerPanel::OnCaptureLost(wxMouseCaptureLostEvent & WXUNUSED(evt))
 {
    DrawQuickPlayIndicator(NULL);
@@ -2945,8 +3074,11 @@ wxRect AdornedRulerPanel::GetButtonAreaRect(bool includeBorder) const
 
    if(includeBorder)
       x = 0, y = 0, bottomMargin = 0;
-   else
-      x = LeftMargin, y = TopMargin, bottomMargin = BottomMargin;
+   else {
+      x = std::max(LeftMargin, FocusBorderLeft);
+      y = std::max(TopMargin, FocusBorderTop);
+      bottomMargin = std::max(BottomMargin, FocusBorderBottom);
+   }
 
    wxRect rect {
       x, y,
@@ -3047,8 +3179,17 @@ void AdornedRulerPanel::ToggleButtonState( StatusChoice button )
    UpdateStatusBarAndTooltips(mCaptureState.button);
 }
 
-void AdornedRulerPanel::ShowButtonMenu( StatusChoice button, wxPoint position)
+void AdornedRulerPanel::ShowButtonMenu( StatusChoice button, wxPoint *pPosition)
 {
+   wxPoint position;
+   if(pPosition)
+      position = *pPosition;
+   else
+   {
+      auto rect = GetArrowRect(GetButtonRect(button));
+      position = { rect.GetLeft() + 1, rect.GetBottom() + 1 };
+   }
+
    switch (button) {
       case StatusChoice::QuickPlayButton:
          ShowMenu(position); break;
@@ -3098,7 +3239,8 @@ namespace {
 }
 
 void AdornedRulerPanel::DoDrawPushbutton
-   (wxDC *dc, StatusChoice button, PointerState down, PointerState pointerState) const
+   (wxDC *dc, StatusChoice button, PointerState down, PointerState pointerState,
+    bool inSomeButton) const
 {
    // Adapted from TrackInfo::DrawMuteSolo()
    ADCChanger changer(dc);
@@ -3111,7 +3253,12 @@ void AdornedRulerPanel::DoDrawPushbutton
 
    // Draw borders, bevels, and backgrounds of the split sections
 
-   if (pointerState == PointerState::InArrow) {
+   const bool tabHighlight =
+      !inSomeButton &&
+      mTabState.mButton == button &&
+      HasFocus();
+
+   if (pointerState == PointerState::InArrow || (tabHighlight && mTabState.mMenu)) {
       // Draw highlighted arrow after
       DrawButtonBackground(dc, textRect, (down == PointerState::In), false);
       DrawButtonBackground(dc, arrowRect, (down == PointerState::InArrow), true);
@@ -3120,7 +3267,8 @@ void AdornedRulerPanel::DoDrawPushbutton
       // Draw maybe highlighted text after
       DrawButtonBackground(dc, arrowRect, (down == PointerState::InArrow), false);
       DrawButtonBackground(
-         dc, textRect, (down == PointerState::In), (pointerState == PointerState::In));
+         dc, textRect, (down == PointerState::In),
+         (pointerState == PointerState::In || (tabHighlight && !mTabState.mMenu)));
    }
 
    // Draw the menu triangle
@@ -3134,10 +3282,12 @@ void AdornedRulerPanel::DoDrawPushbutton
 #else
       wxColour c = *wxBLACK;
 #endif
-      if (pointerState == PointerState::InArrow)
+
+      //if (pointerState == PointerState::InArrow)
          dc->SetBrush( wxBrush{ c } );
-      else
-         dc->SetBrush( wxBrush{ *wxTRANSPARENT_BRUSH } ); // Make outlined arrow only
+      //else
+         //dc->SetBrush( wxBrush{ *wxTRANSPARENT_BRUSH } ); // Make outlined arrow only
+
       dc->SetPen( wxPen{ c } );
 
       // This function draws an arrow half as tall as wide:
@@ -3185,11 +3335,8 @@ void AdornedRulerPanel::HandlePushbuttonEvent(wxMouseEvent &evt)
          ;
       else if (in == PointerState::In)
          ToggleButtonState(button);
-      else {
-         auto rect = GetArrowRect(GetButtonRect(button));
-         wxPoint point { rect.GetLeft() + 1, rect.GetBottom() + 1 };
-         ShowButtonMenu(button, point);
-      }
+      else
+         ShowButtonMenu(button, nullptr);
 
       mCaptureState = CaptureState{};
    }
@@ -3211,6 +3358,11 @@ void AdornedRulerPanel::DoDrawPushbuttons(wxDC *dc) const
    AColor::MediumTrackInfo(dc, false);
    dc->DrawRectangle(background);
 
+   bool inSomeButton = false;
+   for (auto button = StatusChoice::FirstButton; !inSomeButton && IsButton(button); ++button) {
+      inSomeButton = InButtonRect(button, nullptr) != PointerState::Out;
+   }
+
    for (auto button = StatusChoice::FirstButton; IsButton(button); ++button) {
       bool state = GetButtonState(button);
       auto in = InButtonRect(button, nullptr);
@@ -3227,7 +3379,7 @@ void AdornedRulerPanel::DoDrawPushbuttons(wxDC *dc) const
       }
       else if (state)
          down = PointerState::In;
-      DoDrawPushbutton(dc, button, down, in);
+      DoDrawPushbutton(dc, button, down, in, inSomeButton);
    }
 }
 
@@ -3248,16 +3400,35 @@ void AdornedRulerPanel::DoDrawBackground(wxDC * dc)
 
 void AdornedRulerPanel::DoDrawEdge(wxDC *dc)
 {
-   wxRect r = mOuter;
-   r.width -= RightMargin;
-   r.height -= BottomMargin;
-   AColor::BevelTrackInfo( *dc, true, r );
+   if (HasFocus()) {
+      dc->SetBrush(*wxTRANSPARENT_BRUSH);
+      wxRect rect{ mOuter };
+      --rect.height;  // Leave room for the black stroke
 
+      AColor::TrackFocusPen(dc, 1);
+      dc->DrawRectangle(rect);
+
+      AColor::TrackFocusPen(dc, 0);
+      rect.Deflate(1, 1);
+      dc->DrawRectangle(rect);
+
+      static_assert(FocusBorder == 2, "Draws the wrong number of rectangles");
+   }
+   else {
+      wxRect r = mOuter;
+      r.width -= RightMargin;
+      r.height -= BottomMargin;
+      AColor::BevelTrackInfo( *dc, true, r );
+   }
+
+   // Black stroke at bottom
    dc->SetPen( *wxBLACK_PEN );
    dc->DrawLine( mOuter.x,
-                 mOuter.y + mOuter.height - 1,
-                 mOuter.x + mOuter.width,
-                 mOuter.y + mOuter.height - 1 );
+                mOuter.y + mOuter.height - 1,
+                mOuter.x + mOuter.width,
+                mOuter.y + mOuter.height - 1 );
+
+   static_assert(FocusBorderBottom == 1 + FocusBorder, "Button area might be wrong");
 }
 
 void AdornedRulerPanel::DoDrawMarks(wxDC * dc, bool /*text */ )
