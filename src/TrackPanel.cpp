@@ -157,7 +157,6 @@ is time to refresh some aspect of the screen.
 #include "TrackPanel.h"
 #include "TrackPanelCell.h"
 #include "TrackPanelCellIterator.h"
-#include "TrackPanelOverlay.h"
 
 //#define DEBUG_DRAW_TIMING 1
 // #define SPECTRAL_EDITING_ESC_KEY
@@ -346,14 +345,13 @@ enum {
    OnZoomFitVerticalID,
 };
 
-BEGIN_EVENT_TABLE(TrackPanel, wxWindow)
+BEGIN_EVENT_TABLE(TrackPanel, OverlayPanel)
     EVT_MOUSE_EVENTS(TrackPanel::OnMouseEvent)
     EVT_MOUSE_CAPTURE_LOST(TrackPanel::OnCaptureLost)
     EVT_COMMAND(wxID_ANY, EVT_CAPTURE_KEY, TrackPanel::OnCaptureKey)
     EVT_KEY_DOWN(TrackPanel::OnKeyDown)
     EVT_KEY_UP(TrackPanel::OnKeyUp)
     EVT_CHAR(TrackPanel::OnChar)
-    EVT_SIZE(TrackPanel::OnSize)
     EVT_PAINT(TrackPanel::OnPaint)
     EVT_SET_FOCUS(TrackPanel::OnSetFocus)
     EVT_KILL_FOCUS(TrackPanel::OnKillFocus)
@@ -423,15 +421,13 @@ TrackPanel::TrackPanel(wxWindow * parent, wxWindowID id,
                        ViewInfo * viewInfo,
                        TrackPanelListener * listener,
                        AdornedRulerPanel * ruler)
-   : wxPanel(parent, id, pos, size, wxWANTS_CHARS | wxNO_BORDER),
+   : OverlayPanel(parent, id, pos, size, wxWANTS_CHARS | wxNO_BORDER),
      mTrackInfo(this),
      mListener(listener),
      mTracks(tracks),
      mViewInfo(viewInfo),
      mRuler(ruler),
      mTrackArtist(NULL),
-     mBacking(NULL),
-     mResizeBacking(false),
      mRefreshBacking(false),
      mConverter(NumericConverter::TIME),
      mAutoScrolling(false),
@@ -449,11 +445,6 @@ TrackPanel::TrackPanel(wxWindow * parent, wxWindowID id,
 #if wxUSE_ACCESSIBILITY
    SetAccessible( mAx );
 #endif
-
-   // Preinit the backing DC and bitmap so routines that require it will
-   // not cause a crash if they run before the panel is fully initialized.
-   mBacking = new wxBitmap(1, 1);
-   mBackingDC.SelectObject(*mBacking);
 
    mMouseCapture = IsUncaptured;
    mSlideUpDownOnly = false;
@@ -581,11 +572,6 @@ TrackPanel::~TrackPanel()
    if (HasCapture())
       ReleaseMouse();
 
-   if (mBacking)
-   {
-      mBackingDC.SelectObject( wxNullBitmap );
-      delete mBacking;
-   }
    delete mTrackArtist;
 
 
@@ -966,6 +952,7 @@ void TrackPanel::OnTimer(wxTimerEvent& )
    }
 
    DrawOverlays(false);
+   mRuler->DrawOverlays(false);
 
    if(IsAudioActive() && gAudioIO->GetNumCaptureChannels()) {
 
@@ -1054,17 +1041,6 @@ double TrackPanel::GetScreenEndTime() const
    return mViewInfo->PositionToTime(width, true);
 }
 
-/// OnSize() is called when the panel is resized
-void TrackPanel::OnSize(wxSizeEvent & /* event */)
-{
-   // Tell OnPaint() to recreate the backing bitmap
-   mResizeBacking = true;
-
-   // Refresh the entire area.  Really only need to refresh when
-   // expanding...is it worth the trouble?
-   Refresh();
-}
-
 /// AS: OnPaint( ) is called during the normal course of
 ///  completing a repaint operation.
 void TrackPanel::OnPaint(wxPaintEvent & /* event */)
@@ -1086,44 +1062,27 @@ void TrackPanel::OnPaint(wxPaintEvent & /* event */)
          // Reset (should a mutex be used???)
          mRefreshBacking = false;
 
-         if (mResizeBacking)
-         {
-            // Reset
-            mResizeBacking = false;
-
-            // Delete the backing bitmap
-            if (mBacking)
-            {
-               mBackingDC.SelectObject(wxNullBitmap);
-               delete mBacking;
-               mBacking = NULL;
-            }
-
-            wxSize sz = GetClientSize();
-            mBacking = new wxBitmap();
-            mBacking->Create(sz.x, sz.y); //, *dc);
-            mBackingDC.SelectObject(*mBacking);
-         }
-
          // Redraw the backing bitmap
-         DrawTracks(&mBackingDC);
+         DrawTracks(&GetBackingDCForRepaint());
 
          // Copy it to the display
-         dc.Blit(0, 0, mBacking->GetWidth(), mBacking->GetHeight(), &mBackingDC, 0, 0);
+         DisplayBitmap(dc);
       }
       else
       {
          // Copy full, possibly clipped, damage rectangle
-         dc.Blit(box.x, box.y, box.width, box.height, &mBackingDC, box.x, box.y);
+         RepairBitmap(dc, box.x, box.y, box.width, box.height);
       }
 
       // Done with the clipped DC
-   }
 
-   // Drawing now goes directly to the client area.  It can't use the paint DC
-   // becuase the paint DC might be clipped and DrawOverlays() may need to draw
-   // outside the clipped region.
-   DrawOverlays(true);
+      // Drawing now goes directly to the client area.
+      // DrawOverlays() may need to draw outside the clipped region.
+      // (Used to make a new, separate wxClientDC, but that risks flashing
+      // problems on Mac.)
+      dc.DestroyClippingRegion();
+      DrawOverlays(true, &dc);
+   }
 
 #if DEBUG_DRAW_TIMING
    sw.Pause();
@@ -5513,12 +5472,9 @@ void TrackPanel::HandleWheelRotation(wxMouseEvent & event)
       (event.m_wheelDelta > 0 ? (double)event.m_wheelDelta : 120.0);
 
    if (event.ShiftDown()
-#ifdef EXPERIMENTAL_SCRUBBING_SMOOTH_SCROLL
        // Don't pan during smooth scrolling.  That would conflict with keeping
        // the play indicator centered.
-       && !GetProject()->GetScrubber().IsScrollScrubbing()
-#endif
-      )
+       && !GetProject()->GetScrubber().IsScrollScrubbing())
    {
       // MM: Scroll left/right when used with Shift key down
       mListener->TP_ScrollWindow(
@@ -5547,15 +5503,12 @@ void TrackPanel::HandleWheelRotation(wxMouseEvent & event)
       // Time corresponding to mouse position
       wxCoord xx;
       double center_h;
-#ifdef EXPERIMENTAL_SCRUBBING_SMOOTH_SCROLL
       if (GetProject()->GetScrubber().IsScrollScrubbing()) {
          // Expand or contract about the center, ignoring mouse position
          center_h = mViewInfo->h + (GetScreenEndTime() - mViewInfo->h) / 2.0;
          xx = mViewInfo->TimeToPosition(center_h, trackLeftEdge);
       }
-      else
-#endif
-      {
+      else {
          xx = event.m_x;
          center_h = mViewInfo->PositionToTime(xx, trackLeftEdge);
       }
@@ -7069,83 +7022,6 @@ void TrackPanel::DrawOutsideOfTrack(Track * t, wxDC * dc, const wxRect & rect)
 #endif
 }
 
-void TrackPanel::AddOverlay(TrackPanelOverlay *pOverlay)
-{
-   mOverlays.push_back(pOverlay);
-}
-
-bool TrackPanel::RemoveOverlay(TrackPanelOverlay *pOverlay)
-{
-   const size_t oldSize = mOverlays.size();
-   std::remove(mOverlays.begin(), mOverlays.end(), pOverlay);
-   return oldSize != mOverlays.size();
-}
-
-void TrackPanel::ClearOverlays()
-{
-   mOverlays.clear();
-}
-
-void TrackPanel::DrawOverlays(bool repaint)
-{
-   size_t n_pairs = mOverlays.size();
-
-   std::vector< std::pair<wxRect, bool> > pairs;
-   pairs.reserve(n_pairs);
-
-   // Find out the rectangles and outdatedness for each overlay
-   wxSize size(mBackingDC.GetSize());
-   for (const auto pOverlay : mOverlays)
-      pairs.push_back(pOverlay->GetRectangle(size));
-
-   // See what requires redrawing.  If repainting, all.
-   // If not, then whatever is outdated, and whatever will be damaged by
-   // undrawing.
-   // By redrawing only what needs it, we avoid flashing things like
-   // the cursor that are drawn with invert.
-   if (!repaint) {
-      bool done;
-      do {
-         done = true;
-         for (size_t ii = 0; ii < n_pairs; ++ii) {
-            for (size_t jj = ii + 1; jj < n_pairs; ++jj) {
-               if (pairs[ii].second != pairs[jj].second &&
-                  pairs[ii].first.Intersects(pairs[jj].first)) {
-                  done = false;
-                  pairs[ii].second = pairs[jj].second = true;
-               }
-            }
-         }
-      } while (!done);
-   }
-
-   // Erase
-   bool done = true;
-   auto it2 = pairs.begin();
-   for (auto pOverlay : mOverlays) {
-      if (repaint || it2->second) {
-         done = false;
-         wxClientDC dc(this);
-         pOverlay->Erase(dc, mBackingDC);
-      }
-      ++it2;
-   }
-
-   // Draw
-   if (!done) {
-      it2 = pairs.begin();
-      for (auto pOverlay : mOverlays) {
-         if (repaint || it2->second) {
-            wxClientDC dc(this);
-            TrackPanelCellIterator begin(this, true);
-            TrackPanelCellIterator end(this, false);
-            pOverlay->Draw(dc, begin, end);
-         }
-         ++it2;
-      }
-   }
-}
-
 /// Draw a three-level highlight gradient around the focused track.
 void TrackPanel::HighlightFocusedTrack(wxDC * dc, const wxRect & rect)
 {
@@ -7237,49 +7113,46 @@ void TrackPanel::UpdateVRulerSize()
 /// TrackPanel::OnNextTrack.
 void TrackPanel::OnPrevTrack( bool shift )
 {
-   bool rulerFocus = mRuler->HasFocus();
-   bool stealFocus = (mCircularTrackNavigation && rulerFocus);
-   if(stealFocus) // if there isn't one, focus on last
+   TrackListIterator iter( mTracks );
+   Track* t = GetFocusedTrack();
+   if( t == NULL )   // if there isn't one, focus on last
    {
-      if(rulerFocus) {
-         this->SetFocus();
-         mRuler->Refresh();
-      }
-      TrackListIterator iter( mTracks );
-      auto t = iter.Last();
+      t = iter.Last();
       SetFocusedTrack( t );
       EnsureVisible( t );
       MakeParentModifyState(false);
       return;
    }
-   else if (rulerFocus) {
-      // JKC: wxBell() is probably for accessibility, so a blind
-      // user knows they were at the top track.
-      wxBell();
-      return;
-   }
 
-   Track* t = GetFocusedTrack();
-   Track* p = mTracks->GetPrev( t, true ); // Get previous track
-   if (!p) {
-      SetFocusedTrack(nullptr);
-      mRuler->SetFocus();
-      Refresh(false);
-      mRuler->Refresh();
-      return;
-   }
-
+   Track* p = NULL;
    bool tSelected = false;
    bool pSelected = false;
    if( shift )
    {
+      p = mTracks->GetPrev( t, true ); // Get previous track
+      if( p == NULL )   // On first track
+      {
+         // JKC: wxBell() is probably for accessibility, so a blind
+         // user knows they were at the top track.
+         wxBell();
+         if( mCircularTrackNavigation )
+         {
+            TrackListIterator iter( mTracks );
+            p = iter.Last();
+         }
+         else
+         {
+            EnsureVisible( t );
+            return;
+         }
+      }
       tSelected = t->GetSelected();
       if (p)
          pSelected = p->GetSelected();
       if( tSelected && pSelected )
       {
          mTracks->Select( t, false );
-         SetFocusedTrack( p );   // move focus to next track up
+         SetFocusedTrack( p );   // move focus to next track down
          EnsureVisible( p );
          MakeParentModifyState(false);
          return;
@@ -7287,7 +7160,7 @@ void TrackPanel::OnPrevTrack( bool shift )
       if( tSelected && !pSelected )
       {
          mTracks->Select( p, true );
-         SetFocusedTrack( p );   // move focus to next track up
+         SetFocusedTrack( p );   // move focus to next track down
          EnsureVisible( p );
          MakeParentModifyState(false);
          return;
@@ -7295,7 +7168,7 @@ void TrackPanel::OnPrevTrack( bool shift )
       if( !tSelected && pSelected )
       {
          mTracks->Select( p, false );
-         SetFocusedTrack( p );   // move focus to next track up
+         SetFocusedTrack( p );   // move focus to next track down
          EnsureVisible( p );
          MakeParentModifyState(false);
          return;
@@ -7303,7 +7176,7 @@ void TrackPanel::OnPrevTrack( bool shift )
       if( !tSelected && !pSelected )
       {
          mTracks->Select( t, true );
-         SetFocusedTrack( p );   // move focus to next track up
+         SetFocusedTrack( p );   // move focus to next track down
          EnsureVisible( p );
          MakeParentModifyState(false);
          return;
@@ -7311,10 +7184,35 @@ void TrackPanel::OnPrevTrack( bool shift )
    }
    else
    {
-      SetFocusedTrack( p );   // move focus to next track up
-      EnsureVisible( p );
-      MakeParentModifyState(false);
-      return;
+      p = mTracks->GetPrev( t, true ); // Get next track
+      if( p == NULL )   // On last track so stay there?
+      {
+         wxBell();
+         if( mCircularTrackNavigation )
+         {
+            TrackListIterator iter( mTracks );
+            for( Track *d = iter.First(); d; d = iter.Next( true ) )
+            {
+               p = d;
+            }
+            SetFocusedTrack( p );   // Wrap to the first track
+            EnsureVisible( p );
+            MakeParentModifyState(false);
+            return;
+         }
+         else
+         {
+            EnsureVisible( t );
+            return;
+         }
+      }
+      else
+      {
+         SetFocusedTrack( p );   // move focus to next track down
+         EnsureVisible( p );
+         MakeParentModifyState(false);
+         return;
+      }
    }
 }
 
@@ -7323,46 +7221,37 @@ void TrackPanel::OnPrevTrack( bool shift )
 /// block or not.
 void TrackPanel::OnNextTrack( bool shift )
 {
-   if(mRuler->HasFocus()) {
-      TrackListIterator iter(mTracks);
-      auto first = iter.First();
-      if(first != nullptr) {
-         // Steal focus
-         this->SetFocus();
-         SetFocusedTrack(first);
-         EnsureVisible(first);
-         MakeParentModifyState(false);
-         mRuler->Refresh();
-      }
-      return;
-   }
-
    Track *t;
-   Track *n = nullptr;
-   bool tSelected, nSelected;
+   Track *n;
+   TrackListIterator iter( mTracks );
+   bool tSelected,nSelected;
 
    t = GetFocusedTrack();   // Get currently focused track
-   bool surrenderFocus =
-      t == nullptr ||
-      ((n = mTracks->GetNext( t, true )) == nullptr &&
-        mCircularTrackNavigation);
-
-   if( surrenderFocus )   // if there is no next, give focus to the ruler
+   if( t == NULL )   // if there isn't one, focus on first
    {
-      SetFocusedTrack(nullptr);
-      mRuler->SetFocus();
-      mRuler->Refresh();
-      Refresh(false);
+      t = iter.First();
+      SetFocusedTrack( t );
+      EnsureVisible( t );
+      MakeParentModifyState(false);
       return;
    }
 
    if( shift )
    {
+      n = mTracks->GetNext( t, true ); // Get next track
       if( n == NULL )   // On last track so stay there
       {
          wxBell();
-         EnsureVisible( t );
-         return;
+         if( mCircularTrackNavigation )
+         {
+            TrackListIterator iter( mTracks );
+            n = iter.First();
+         }
+         else
+         {
+            EnsureVisible( t );
+            return;
+         }
       }
       tSelected = t->GetSelected();
       nSelected = n->GetSelected();
@@ -7401,11 +7290,24 @@ void TrackPanel::OnNextTrack( bool shift )
    }
    else
    {
+      n = mTracks->GetNext( t, true ); // Get next track
       if( n == NULL )   // On last track so stay there
       {
          wxBell();
-         EnsureVisible( t );
-         return;
+         if( mCircularTrackNavigation )
+         {
+            TrackListIterator iter( mTracks );
+            n = iter.First();
+            SetFocusedTrack( n );   // Wrap to the first track
+            EnsureVisible( n );
+            MakeParentModifyState(false);
+            return;
+         }
+         else
+         {
+            EnsureVisible( t );
+            return;
+         }
       }
       else
       {
@@ -7419,25 +7321,26 @@ void TrackPanel::OnNextTrack( bool shift )
 
 void TrackPanel::OnFirstTrack()
 {
-   SetFocusedTrack(nullptr);
-   if (!mRuler->HasFocus()) {
-      mRuler->SetFocus();
-      mRuler->Refresh();
+   Track *t = GetFocusedTrack();
+   if (!t)
+      return;
+
+   TrackListIterator iter(mTracks);
+   Track *f = iter.First();
+   if (t != f)
+   {
+      SetFocusedTrack(f);
+      MakeParentModifyState(false);
    }
+   EnsureVisible(f);
 }
 
 void TrackPanel::OnLastTrack()
 {
-   if (mTracks->empty()) {
-      OnFirstTrack();
-      return;
-   }
-   else if(mRuler->HasFocus()) {
-      this->SetFocus();
-      mRuler->Refresh();
-   }
-
    Track *t = GetFocusedTrack();
+   if (!t)
+      return;
+
    TrackListIterator iter(mTracks);
    Track *l = iter.Last();
    if (t != l)

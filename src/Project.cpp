@@ -937,7 +937,7 @@ AudacityProject::AudacityProject(wxWindow * parent, wxWindowID id,
    }
    bs->Layout();
 
-   // The right hand side translates to NEW TrackPanel(... in normal
+   // The right hand side translates to NEW TrackPanel(...) in normal
    // Audacity without additional DLLs.
    mTrackPanel = TrackPanel::FactoryFunction(pPage,
                                              TrackPanelID,
@@ -4708,7 +4708,8 @@ void AudacityProject::TP_DisplaySelection()
    if (gAudioIO->IsBusy())
       audioTime = gAudioIO->GetStreamTime();
    else {
-      audioTime = 0;
+      double playEnd;
+      GetPlayRegion(&audioTime, &playEnd);
    }
 
    GetSelectionBar()->SetTimes(mViewInfo.selectedRegion.t0(),
@@ -5364,7 +5365,6 @@ void AudacityProject::PlaybackScroller::OnTimer(wxCommandEvent &event)
    // Let other listeners get the notification
    event.Skip();
 
-#ifdef EXPERIMENTAL_SCRUBBING_SMOOTH_SCROLL
    if (mActive && mProject->IsAudioActive())
    {
       // Pan the view, so that we center the play indicator.
@@ -5382,5 +5382,4 @@ void AudacityProject::PlaybackScroller::OnTimer(wxCommandEvent &event)
          viewInfo.h = std::max(0.0, viewInfo.h);
       trackPanel->Refresh(false);
    }
-#endif
 }
