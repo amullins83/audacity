@@ -210,9 +210,6 @@ void Scrubber::MarkScrubStart(
 
    ctb->SetPlay(true, ControlToolBar::PlayAppearance::Scrub);
 
-   // This disables the pause button.
-   ctb->EnableDisableButtons();
-
    ctb->UpdateStatusBar(mProject);
 
    mScrubStartPosition = xx;
@@ -363,7 +360,7 @@ void Scrubber::ContinueScrubbing()
       const auto lastTime = gAudioIO->GetLastTimeInScrubQueue();
       const auto delta = mLastScrubPosition - position.x;
       const double time = viewInfo.OffsetTimeByPixels(lastTime, delta);
-      result = gAudioIO->EnqueueScrubByPosition(time, mMaxScrubSpeed, false);
+      result = gAudioIO->EnqueueScrubByPosition(time, mMaxScrubSpeed, true);
       mLastScrubPosition = position.x;
    }
    else {
@@ -469,12 +466,17 @@ void Scrubber::HandleScrollWheel(int steps)
    }
 }
 
+void Scrubber::Pause( bool paused )
+{
+   mScrubHasFocus = !paused;
+}
+
 void Scrubber::OnActivateOrDeactivateApp(wxActivateEvent &event)
 {
    if (event.GetActive())
-      mScrubHasFocus = IsScrubbing();
+      Pause(!IsScrubbing() || mProject->GetControlToolBar()->IsPauseDown());
    else
-      mScrubHasFocus = false;
+      Pause(true);
 
    event.Skip();
 }
@@ -665,7 +667,7 @@ Scrubber &ScrubbingOverlay::GetScrubber()
 
 bool Scrubber::PollIsSeeking()
 {
-   return !mDragging && (mAlwaysSeeking || ::wxGetMouseState().LeftIsDown());
+   return mDragging || (mAlwaysSeeking || ::wxGetMouseState().LeftIsDown());
 }
 
 void Scrubber::DoScrub(bool scroll, bool seek)
